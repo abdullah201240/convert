@@ -21,3 +21,14 @@ export function calculateReduction(original: number, converted: number): number 
   const reduction = ((original - converted) / original) * 100;
   return parseFloat(reduction.toFixed(1));
 }
+
+/**
+ * Safely generates a unique ID, falling back to a timestamped random string if crypto.randomUUID
+ * is not available (e.g., in non-secure HTTP contexts on custom local network IPs).
+ */
+export function generateUUID(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+}

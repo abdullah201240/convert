@@ -19,7 +19,7 @@ import ImageCard from "../components/image-card";
 import ConversionStats from "../components/conversion-stats";
 import Header from "../components/header";
 import { UploadFile } from "../types";
-import { calculateReduction } from "../utils";
+import { calculateReduction, generateUUID } from "../utils";
 
 interface Toast {
   id: string;
@@ -54,7 +54,7 @@ export default function Home() {
   }, []);
 
   const addToast = (message: string, type: "success" | "error" | "info" = "success") => {
-    const id = crypto.randomUUID();
+    const id = generateUUID();
     setToasts((prev) => [...prev, { id, message, type }]);
     setTimeout(() => {
       setToasts((prev) => prev.filter((t) => t.id !== id));
@@ -63,7 +63,7 @@ export default function Home() {
 
   const handleFilesSelected = (selectedFiles: File[]) => {
     const newUploads: UploadFile[] = selectedFiles.map((file) => ({
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       file,
       name: file.name,
       size: file.size,
