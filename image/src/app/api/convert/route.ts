@@ -61,7 +61,7 @@ export async function POST(request: NextRequest) {
         const testBuffer = await sharp(intermediateBuffer)
           .avif({
             quality: midQ,
-            effort: 9,
+            effort: 4,
             chromaSubsampling: "4:2:0",
           })
           .toBuffer();
@@ -83,7 +83,7 @@ export async function POST(request: NextRequest) {
         processedBuffer = await sharp(intermediateBuffer)
           .avif({
             quality: minQ,
-            effort: 9,
+            effort: 4,
             chromaSubsampling: "4:2:0",
           })
           .toBuffer();
@@ -93,7 +93,7 @@ export async function POST(request: NextRequest) {
       processedBuffer = await sharp(intermediateBuffer)
         .avif({
           quality: parsedQuality,
-          effort: 9,
+          effort: 4,
           chromaSubsampling: "4:4:4",
         })
         .toBuffer();
