@@ -28,7 +28,8 @@ export async function POST(request: NextRequest) {
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // 1. Process resized & sharpened intermediate image losslessly to avoid decoding original multiple times
+    // 1. Process resized & sharpened intermediate image to a fast high-quality JPEG representation
+    // This dramatically speeds up reload time in the search loop compared to heavy PNG.
     const intermediateBuffer = await sharp(buffer)
       .rotate() // Auto-rotate correctly using EXIF orientation metadata
       .resize({
@@ -38,7 +39,7 @@ export async function POST(request: NextRequest) {
         kernel: "lanczos3",
       })
       .sharpen() // Apply smart sharpen
-      .png({ compressionLevel: 0 }) // Lossless intermediate representation
+      .jpeg({ quality: 95 }) // Fast high-quality intermediate representation
       .toBuffer();
 
     let processedBuffer: Buffer;
@@ -51,23 +52,23 @@ export async function POST(request: NextRequest) {
       // We search from a visual floor of 20 up to the quality cap.
       const maxQ = Math.max(5, Math.min(100, parsedQuality));
       const minQ = Math.min(20, maxQ);
-      let bestBuffer: Buffer | null = null;
+      let bestQ = minQ;
 
-      // Run 7 search iterations for maximum precision (2^7 = 128 points check resolution)
+      // Run 5 search iterations using effort: 2 (very fast search)
       let low = minQ;
       let high = maxQ;
-      for (let i = 0; i < 7; i++) {
+      for (let i = 0; i < 5; i++) {
         const midQ = Math.round((low + high) / 2);
         const testBuffer = await sharp(intermediateBuffer)
           .avif({
             quality: midQ,
-            effort: 4,
+            effort: 2, // Fast effort inside loop to speed up search
             chromaSubsampling: "4:2:0",
           })
           .toBuffer();
 
         if (testBuffer.length <= targetSizeBytes) {
-          bestBuffer = testBuffer; // Found a valid candidate under target bounds!
+          bestQ = midQ; // Found a valid candidate under target bounds!
           low = midQ + 1; // Try to maximize quality further towards the cap
         } else {
           high = midQ - 1; // Exceeded target size -> search lower quality bounds
@@ -76,18 +77,14 @@ export async function POST(request: NextRequest) {
         if (low > high) break;
       }
 
-      // If we found a candidate under the target, use it. Otherwise, use floor quality as fallback.
-      if (bestBuffer) {
-        processedBuffer = bestBuffer;
-      } else {
-        processedBuffer = await sharp(intermediateBuffer)
-          .avif({
-            quality: minQ,
-            effort: 4,
-            chromaSubsampling: "4:2:0",
-          })
-          .toBuffer();
-      }
+      // Encode the final AVIF buffer using our best quality index at high quality (effort: 4)
+      processedBuffer = await sharp(intermediateBuffer)
+        .avif({
+          quality: bestQ,
+          effort: 4, // Final high-quality compression pass
+          chromaSubsampling: "4:2:0",
+        })
+        .toBuffer();
     } else {
       // Standard single-pass encoding using quality value
       processedBuffer = await sharp(intermediateBuffer)
