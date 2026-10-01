@@ -26,8 +26,22 @@ interface ImageCardProps {
 export default function ImageCard({ file, onConvert, onDownload, onDelete }: ImageCardProps) {
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [sliderPosition, setSliderPosition] = useState(50);
+  const [originalDims, setOriginalDims] = useState<{ width: number; height: number } | null>(
+    file.originalDimensions || null
+  );
   const isDragging = useRef(false);
   const sliderContainerRef = useRef<HTMLDivElement>(null);
+
+  // Measure natural dimensions of the uploaded image
+  useEffect(() => {
+    if (!originalDims && file.previewUrl) {
+      const img = new Image();
+      img.onload = () => {
+        setOriginalDims({ width: img.naturalWidth, height: img.naturalHeight });
+      };
+      img.src = file.previewUrl;
+    }
+  }, [file.previewUrl, originalDims]);
 
   // Squoosh slider movement handler
   const handleMove = React.useCallback((clientX: number) => {
@@ -96,12 +110,19 @@ export default function ImageCard({ file, onConvert, onDownload, onDelete }: Ima
             <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-200 truncate max-w-[240px]" title={file.name}>
               {file.name}
             </h3>
-            <span className="self-center md:self-auto text-[10px] font-bold uppercase tracking-wider text-zinc-400 dark:text-zinc-500 bg-zinc-100 dark:bg-zinc-800/60 px-2 py-0.5 rounded">
-              {file.file.type.split("/")[1]}
-            </span>
+            <div className="flex items-center justify-center md:justify-start gap-1.5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 dark:text-zinc-500 bg-zinc-100 dark:bg-zinc-800/60 px-2 py-0.5 rounded">
+                {file.file.type.split("/")[1] || "IMAGE"}
+              </span>
+              {file.status === "success" && file.outputFormat && (
+                <span className="text-[10px] font-bold uppercase tracking-wider text-brand-primary bg-brand-primary/10 px-2 py-0.5 rounded">
+                  → {file.outputFormat.toUpperCase()}
+                </span>
+              )}
+            </div>
           </div>
 
-          <div className="flex items-center justify-center md:justify-start gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+          <div className="flex flex-wrap items-center justify-center md:justify-start gap-2 text-xs text-zinc-500 dark:text-zinc-400">
             <span>{formatBytes(file.size)}</span>
             {file.status === "success" && file.convertedSize && (
               <>
@@ -113,6 +134,16 @@ export default function ImageCard({ file, onConvert, onDownload, onDelete }: Ima
                   -{file.reduction}%
                 </span>
               </>
+            )}
+            {/* Dimensions display */}
+            {originalDims && (
+              <span className="text-[11px] text-zinc-400 dark:text-zinc-500 hidden sm:inline-flex items-center gap-1 ml-1">
+                <span>({originalDims.width} × {originalDims.height}px</span>
+                {file.convertedDimensions && (
+                  <span>→ {file.convertedDimensions.width} × {file.convertedDimensions.height}px</span>
+                )}
+                <span>)</span>
+              </span>
             )}
           </div>
 
@@ -211,11 +242,17 @@ export default function ImageCard({ file, onConvert, onDownload, onDelete }: Ima
                   Comparing: {file.name}
                 </h2>
                 <div className="flex flex-wrap items-center gap-2 mt-1 text-[11px] md:text-xs">
-                  <span className="text-zinc-500">Original ({file.file.type.split("/")[1]}):</span>
+                  <span className="text-zinc-500">Original ({file.file.type.split("/")[1] || "img"}):</span>
                   <span className="text-zinc-300 font-medium">{formatBytes(file.size)}</span>
+                  {originalDims && (
+                    <span className="text-zinc-400">[{originalDims.width}×{originalDims.height}px]</span>
+                  )}
                   <span className="text-zinc-700">•</span>
-                  <span className="text-zinc-500">AVIF:</span>
+                  <span className="text-zinc-500">{(file.outputFormat || "AVIF").toUpperCase()}:</span>
                   <span className="text-brand-primary font-semibold">{formatBytes(file.convertedSize || 0)}</span>
+                  {file.convertedDimensions && (
+                    <span className="text-brand-primary/80">[{file.convertedDimensions.width}×{file.convertedDimensions.height}px]</span>
+                  )}
                   <span className="text-emerald-500 font-bold bg-emerald-500/10 px-1.5 py-0.5 rounded text-[10px]">
                     -{file.reduction}%
                   </span>
@@ -226,7 +263,7 @@ export default function ImageCard({ file, onConvert, onDownload, onDelete }: Ima
                   onClick={() => onDownload(file.id)}
                   className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-xs font-semibold shadow-md active:scale-95 transition-all"
                 >
-                  <Download className="w-3.5 h-3.5" /> Download AVIF
+                  <Download className="w-3.5 h-3.5" /> Download {(file.outputFormat || "AVIF").toUpperCase()}
                 </button>
                 <button
                   onClick={() => setIsPreviewOpen(false)}
@@ -279,7 +316,7 @@ export default function ImageCard({ file, onConvert, onDownload, onDelete }: Ima
                   Original
                 </div>
                 <div className="absolute bottom-4 right-4 bg-zinc-950/80 px-2.5 py-1 rounded-md text-[10px] font-semibold text-zinc-300 border border-zinc-800/80 pointer-events-none backdrop-blur-sm">
-                  AVIF (Optimized)
+                  {(file.outputFormat || "AVIF").toUpperCase()} (Optimized)
                 </div>
               </div>
             </div>

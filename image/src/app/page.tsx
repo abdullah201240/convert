@@ -18,7 +18,7 @@ import Dropzone from "../components/dropzone";
 import ImageCard from "../components/image-card";
 import ConversionStats from "../components/conversion-stats";
 import Header from "../components/header";
-import { UploadFile } from "../types";
+import { UploadFile, ImageFormat, FitMode } from "../types";
 import { calculateReduction, generateUUID } from "../utils";
 
 interface Toast {
@@ -33,6 +33,8 @@ export default function Home() {
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   // Conversion Settings States
+  const [outputFormat, setOutputFormat] = useState<ImageFormat>("avif");
+  const [fitMode, setFitMode] = useState<FitMode>("inside");
   const [resizePreset, setResizePreset] = useState<string>("preset-default");
   const [customWidth, setCustomWidth] = useState<number>(980);
   const [customHeight, setCustomHeight] = useState<number>(1252);
@@ -129,29 +131,35 @@ export default function Home() {
     try {
       const formData = new FormData();
       formData.append("file", fileItem.file);
+      formData.append("format", outputFormat);
 
       // Map dynamic target dimensions based on preset
-      let targetWidth = 980;
-      let targetHeight = 1252;
-      if (resizePreset === "preset-custom") {
-        targetWidth = customWidth;
-        targetHeight = customHeight;
-      } else if (resizePreset === "preset-1200") {
-        targetWidth = 950;
-        targetHeight = 1200;
-      } else if (resizePreset === "preset-1000") {
-        targetWidth = 1000;
-        targetHeight = 1252;
-      } else if (resizePreset === "preset-fullhd") {
-        targetWidth = 1920;
-        targetHeight = 1080;
-      } else if (resizePreset === "preset-hd") {
-        targetWidth = 1280;
-        targetHeight = 720;
-      }
+      if (resizePreset === "preset-original") {
+        formData.append("width", "original");
+      } else {
+        let targetWidth = 980;
+        let targetHeight = 1252;
+        if (resizePreset === "preset-custom") {
+          targetWidth = customWidth;
+          targetHeight = customHeight;
+        } else if (resizePreset === "preset-1200") {
+          targetWidth = 950;
+          targetHeight = 1200;
+        } else if (resizePreset === "preset-1000") {
+          targetWidth = 1000;
+          targetHeight = 1252;
+        } else if (resizePreset === "preset-fullhd") {
+          targetWidth = 1920;
+          targetHeight = 1080;
+        } else if (resizePreset === "preset-hd") {
+          targetWidth = 1280;
+          targetHeight = 720;
+        }
 
-      formData.append("width", targetWidth.toString());
-      formData.append("height", targetHeight.toString());
+        formData.append("width", targetWidth.toString());
+        formData.append("height", targetHeight.toString());
+        formData.append("fitMode", fitMode);
+      }
 
       formData.append("quality", qualityScore.toString());
       if (useTargetSizeLimit) {
@@ -182,6 +190,8 @@ export default function Home() {
                 convertedUrl: data.dataUrl,
                 convertedSize: data.size,
                 reduction: calculateReduction(f.size, data.size),
+                outputFormat: (data.format || outputFormat) as ImageFormat,
+                convertedDimensions: data.width && data.height ? { width: data.width, height: data.height } : undefined,
               }
             : f
         )
@@ -209,14 +219,27 @@ export default function Home() {
     setIsProcessingAll(true);
     addToast(`Starting batch conversion of ${pendingFiles.length} images...`, "info");
 
-    const conversionPromises = pendingFiles.map((file) => convertSingleFile(file.id));
-    const results = await Promise.all(conversionPromises);
-    
+    // Worker pool with concurrency limit to prevent server overload
+    const CONCURRENCY_LIMIT = 3;
+    const results: boolean[] = new Array(pendingFiles.length);
+    let currentIndex = 0;
+
+    const workers = Array.from(
+      { length: Math.min(CONCURRENCY_LIMIT, pendingFiles.length) },
+      async () => {
+        while (currentIndex < pendingFiles.length) {
+          const idx = currentIndex++;
+          results[idx] = await convertSingleFile(pendingFiles[idx].id);
+        }
+      }
+    );
+
+    await Promise.all(workers);
     setIsProcessingAll(false);
     
     const succeeded = results.filter(Boolean).length;
     if (succeeded > 0) {
-      addToast(`Successfully converted ${succeeded} image(s) to AVIF.`, "success");
+      addToast(`Successfully converted ${succeeded} image(s) to ${outputFormat.toUpperCase()}.`, "success");
     }
   };
 
@@ -227,7 +250,8 @@ export default function Home() {
     const link = document.createElement("a");
     link.href = fileItem.convertedUrl;
     // Set appropriate output extension
-    const newName = fileItem.name.replace(/\.[^/.]+$/, "") + ".avif";
+    const ext = (fileItem.outputFormat || outputFormat || "avif").replace("jpeg", "jpg");
+    const newName = fileItem.name.replace(/\.[^/.]+$/, "") + "." + ext;
     link.download = newName;
     document.body.appendChild(link);
     link.click();
@@ -248,8 +272,9 @@ export default function Home() {
         if (!file.convertedUrl) return;
         // Parse the base64 content out of the dataUrl
         const base64Content = file.convertedUrl.split(",")[1];
-        const avifName = file.name.replace(/\.[^/.]+$/, "") + ".avif";
-        zip.file(avifName, base64Content, { base64: true });
+        const ext = (file.outputFormat || outputFormat || "avif").replace("jpeg", "jpg");
+        const fileName = file.name.replace(/\.[^/.]+$/, "") + "." + ext;
+        zip.file(fileName, base64Content, { base64: true });
       });
 
       const contentBlob = await zip.generateAsync({ type: "blob" });
@@ -257,7 +282,7 @@ export default function Home() {
 
       const link = document.createElement("a");
       link.href = downloadUrl;
-      link.download = "opticconvert-avif-images.zip";
+      link.download = `opticconvert-${outputFormat}-images.zip`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -286,25 +311,45 @@ export default function Home() {
 
         <div className="flex flex-col items-center text-center gap-3 max-w-2xl mx-auto z-10">
           <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-brand-primary/10 text-brand-primary border border-brand-primary/20 text-xs font-semibold">
-            <Layers className="w-3.5 h-3.5" /> Next.js 15 + Sharp Engine
+            <Layers className="w-3.5 h-3.5" /> Next.js 16 + Sharp Engine
           </div>
           <h2 className="text-3xl md:text-5xl font-extrabold tracking-tight text-zinc-900 dark:text-white leading-tight">
-            High-Fidelity <span className="bg-gradient-to-r from-brand-primary to-brand-secondary bg-clip-text text-transparent">AVIF</span> Image Converter
+            High-Fidelity <span className="bg-gradient-to-r from-brand-primary to-brand-secondary bg-clip-text text-transparent">{outputFormat.toUpperCase()}</span> Image Converter
           </h2>
           <p className="text-sm md:text-base text-zinc-500 dark:text-zinc-400 font-medium">
-            Optimize your JPG, PNG, and WebP images. Rotate, sharpen, resize, and convert to premium-quality AVIF files using Sharp server-side.
+            Optimize your JPG, PNG, WebP, and AVIF images. Fast server-side compression, custom resizing, and multi-format conversion using Sharp.
           </p>
         </div>
 
         {/* Settings Panel */}
         <div className="w-full z-10 bg-card dark:bg-zinc-900/50 border border-zinc-200 dark:border-zinc-800 rounded-3xl p-5 md:p-6 shadow-sm flex flex-col gap-6 animate-slide-up">
-          <div className="flex items-center gap-2 border-b border-zinc-200/60 dark:border-zinc-800 pb-3">
-            <div className="p-1.5 bg-brand-primary/10 text-brand-primary rounded-lg">
-              <Layers className="w-4 h-4" />
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-zinc-200/60 dark:border-zinc-800 pb-3">
+            <div className="flex items-center gap-2">
+              <div className="p-1.5 bg-brand-primary/10 text-brand-primary rounded-lg">
+                <Layers className="w-4 h-4" />
+              </div>
+              <h3 className="text-sm font-bold text-zinc-800 dark:text-zinc-100">
+                Conversion & Resizing Options
+              </h3>
             </div>
-            <h3 className="text-sm font-bold text-zinc-800 dark:text-zinc-100">
-              Compression & Resizing Options
-            </h3>
+
+            {/* Format Selection Pills */}
+            <div className="flex items-center gap-1.5 bg-zinc-100 dark:bg-zinc-950 p-1 rounded-xl border border-zinc-200/60 dark:border-zinc-800">
+              {(["avif", "webp", "jpeg", "png"] as const).map((fmt) => (
+                <button
+                  key={fmt}
+                  type="button"
+                  onClick={() => setOutputFormat(fmt)}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold uppercase transition-all duration-200 ${
+                    outputFormat === fmt
+                      ? "bg-brand-primary text-white shadow-xs"
+                      : "text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100"
+                  }`}
+                >
+                  {fmt === "jpeg" ? "JPG" : fmt}
+                </button>
+              ))}
+            </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -318,6 +363,7 @@ export default function Home() {
                 onChange={(e) => setResizePreset(e.target.value)}
                 className="w-full px-3.5 py-2.5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 text-xs font-semibold text-zinc-700 dark:text-zinc-300 outline-none focus:border-brand-primary transition-all duration-200"
               >
+                <option value="preset-original">Original Resolution (No Resize)</option>
                 <option value="preset-default">980 × 1252 (Default Bounding Box)</option>
                 <option value="preset-1200">950 × 1200 (Custom Bounds)</option>
                 <option value="preset-1000">1000 × 1252 (Custom Portrait)</option>
@@ -325,6 +371,28 @@ export default function Home() {
                 <option value="preset-hd">1280 × 720 (HD Landscape)</option>
                 <option value="preset-custom">Custom Dimensions...</option>
               </select>
+
+              {resizePreset !== "preset-original" && (
+                <div className="flex items-center justify-between gap-2 mt-1 px-1">
+                  <span className="text-[11px] font-bold text-zinc-500 dark:text-zinc-400 uppercase">Fit Mode:</span>
+                  <div className="flex items-center gap-1 bg-zinc-100 dark:bg-zinc-950 p-0.5 rounded-lg border border-zinc-200/50 dark:border-zinc-800 text-[10px]">
+                    {(["inside", "cover", "contain"] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => setFitMode(mode)}
+                        className={`px-2 py-0.5 rounded font-semibold capitalize transition-all ${
+                          fitMode === mode
+                            ? "bg-white dark:bg-zinc-800 text-brand-primary shadow-xs font-bold"
+                            : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+                        }`}
+                      >
+                        {mode}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {resizePreset === "preset-custom" && (
                 <div className="grid grid-cols-2 gap-3 mt-2 animate-fade-in">
@@ -526,7 +594,7 @@ export default function Home() {
           <div className="flex flex-col gap-1.5 text-zinc-500 dark:text-zinc-400">
             <span className="font-bold text-zinc-850 dark:text-zinc-200">Active Sharp Configuration:</span>
             <p className="leading-relaxed">
-              Every image will be rotated according to EXIF orientation tag, scaled to fit inside a <code className="bg-zinc-200/50 dark:bg-zinc-800 px-1 py-0.5 rounded text-brand-primary">980x1252</code> bounding box with Lanczos3 interpolation, enhanced with smart sharpening, metadata stripped, and encoded to AVIF with <code className="bg-zinc-200/50 dark:bg-zinc-800 px-1 py-0.5 rounded text-brand-primary">quality: 50</code>, <code className="bg-zinc-200/50 dark:bg-zinc-800 px-1 py-0.5 rounded text-brand-primary">effort: 9</code>, and <code className="bg-zinc-200/50 dark:bg-zinc-800 px-1 py-0.5 rounded text-brand-primary">chromaSubsampling: 4:4:4</code>.
+              Images will be auto-rotated with EXIF, {resizePreset === "preset-original" ? "preserving original resolution" : `scaled to bounds with Lanczos3 (${fitMode} fit)`}, enhanced with smart sharpening, and encoded to <code className="bg-zinc-200/50 dark:bg-zinc-800 px-1 py-0.5 rounded text-brand-primary">{outputFormat.toUpperCase()}</code> {useTargetSizeLimit ? `targeting ≤ ${targetSizeKb} KB with quality cap ${qualityScore}%` : `with quality factor ${qualityScore}%`}.
             </p>
           </div>
         </div>

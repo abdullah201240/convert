@@ -24,15 +24,16 @@ export default function Dropzone({ onFilesSelected, disabled = false }: Dropzone
     }
   };
 
-  const validateAndProcessFiles = (rawFiles: FileList | null) => {
+  const validateAndProcessFiles = React.useCallback((rawFiles: FileList | File[] | null) => {
     if (!rawFiles) return;
 
-    const validTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
+    const validTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/avif"];
     const filteredFiles: File[] = [];
 
-    for (let i = 0; i < rawFiles.length; i++) {
-      const file = rawFiles[i];
-      if (validTypes.includes(file.type) || file.name.match(/\.(jpg|jpeg|png|webp)$/i)) {
+    const fileList = Array.from(rawFiles);
+    for (let i = 0; i < fileList.length; i++) {
+      const file = fileList[i];
+      if (validTypes.includes(file.type) || file.name.match(/\.(jpg|jpeg|png|webp|avif)$/i)) {
         filteredFiles.push(file);
       }
     }
@@ -40,7 +41,37 @@ export default function Dropzone({ onFilesSelected, disabled = false }: Dropzone
     if (filteredFiles.length > 0) {
       onFilesSelected(filteredFiles);
     }
-  };
+  }, [onFilesSelected]);
+
+  // Support pasting image directly from clipboard (e.g. Cmd+V or Ctrl+V)
+  React.useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      if (disabled) return;
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      const pastedFiles: File[] = [];
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.startsWith("image/")) {
+          const file = items[i].getAsFile();
+          if (file) {
+            // Assign a sensible name if it's a raw clipboard paste
+            const namedFile = file.name === "image.png" 
+              ? new File([file], `clipboard-${Date.now()}.png`, { type: file.type })
+              : file;
+            pastedFiles.push(namedFile);
+          }
+        }
+      }
+
+      if (pastedFiles.length > 0) {
+        validateAndProcessFiles(pastedFiles);
+      }
+    };
+
+    window.addEventListener("paste", handlePaste);
+    return () => window.removeEventListener("paste", handlePaste);
+  }, [disabled, validateAndProcessFiles]);
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -82,7 +113,7 @@ export default function Dropzone({ onFilesSelected, disabled = false }: Dropzone
         ref={fileInputRef}
         type="file"
         multiple
-        accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+        accept=".jpg,.jpeg,.png,.webp,.avif,image/jpeg,image/png,image/webp,image/avif"
         onChange={handleChange}
         className="hidden"
       />
@@ -102,22 +133,21 @@ export default function Dropzone({ onFilesSelected, disabled = false }: Dropzone
 
         <div className="flex flex-col gap-1 max-w-sm">
           <p className="text-base font-semibold text-zinc-800 dark:text-zinc-200">
-            Drag & drop your images here, or{" "}
-            <span className="text-brand-primary font-medium hover:underline">browse</span>
+            Drag & drop images, <span className="text-brand-primary font-medium hover:underline">browse</span>, or paste (Ctrl+V)
           </p>
           <p className="text-xs text-zinc-500 dark:text-zinc-400">
-            Supports JPG, PNG, and WebP formats
+            Supports JPG, PNG, WebP, and AVIF formats
           </p>
         </div>
 
         <div className="flex items-center gap-3 mt-2 text-[11px] text-zinc-400 dark:text-zinc-600 font-medium">
           <div className="flex items-center gap-1">
-            <ImageIcon className="w-3.5 h-3.5" /> High-Res Max Output
+            <ImageIcon className="w-3.5 h-3.5" /> High-Res Output
           </div>
           <span>•</span>
-          <div>Auto-Rotate EXIF</div>
+          <div>Clipboard Paste</div>
           <span>•</span>
-          <div>Lanczos3 Resizing</div>
+          <div>Auto-Rotate EXIF</div>
         </div>
       </div>
     </div>

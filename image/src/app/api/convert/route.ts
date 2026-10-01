@@ -19,89 +19,134 @@ export async function POST(request: NextRequest) {
     const heightRaw = formData.get("height") as string | null;
     const qualityRaw = formData.get("quality") as string | null;
     const targetSizeKbRaw = formData.get("targetSizeKb") as string | null;
+    const formatRaw = (formData.get("format") as string | null)?.toLowerCase() || "avif";
+    const fitModeRaw = (formData.get("fitMode") as string | null)?.toLowerCase() || "inside";
 
-    const parsedWidth = widthRaw ? parseInt(widthRaw) : 980;
-    const parsedHeight = heightRaw ? parseInt(heightRaw) : 1252;
-    const parsedQuality = qualityRaw ? parseInt(qualityRaw) : 50;
+    const isOriginalSize = widthRaw === "original" || (!widthRaw && !heightRaw);
+    const parsedWidth = isOriginalSize ? undefined : (widthRaw ? parseInt(widthRaw) : 980);
+    const parsedHeight = isOriginalSize ? undefined : (heightRaw ? parseInt(heightRaw) : 1252);
+    const parsedQuality = qualityRaw ? Math.max(1, Math.min(100, parseInt(qualityRaw))) : 50;
     const targetSizeKb = targetSizeKbRaw ? parseInt(targetSizeKbRaw) : null;
+
+    const targetFormat = (["avif", "webp", "jpeg", "jpg", "png"].includes(formatRaw) 
+      ? formatRaw 
+      : "avif") as "avif" | "webp" | "jpeg" | "jpg" | "png";
+
+    const normalizedFormat = targetFormat === "jpg" ? "jpeg" : targetFormat;
 
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // 1. Process resized & sharpened intermediate image to a fast high-quality JPEG representation
-    // This dramatically speeds up reload time in the search loop compared to heavy PNG.
-    const intermediateBuffer = await sharp(buffer)
-      .rotate() // Auto-rotate correctly using EXIF orientation metadata
-      .resize({
+    // Initial sharp instance to inspect metadata and auto-rotate
+    let pipeline = sharp(buffer).rotate();
+
+    // 1. Resize if not maintaining original dimensions
+    if (!isOriginalSize && parsedWidth && parsedHeight) {
+      const validFit = (["inside", "cover", "contain", "fill"].includes(fitModeRaw) 
+        ? fitModeRaw 
+        : "inside") as "inside" | "cover" | "contain" | "fill";
+
+      pipeline = pipeline.resize({
         width: parsedWidth,
         height: parsedHeight,
-        fit: "inside",
+        fit: validFit,
         kernel: "lanczos3",
-      })
-      .sharpen() // Apply smart sharpen
-      .jpeg({ quality: 95 }) // Fast high-quality intermediate representation
-      .toBuffer();
+      });
+    }
+
+    // Apply smart sharpening
+    pipeline = pipeline.sharpen();
+
+    // Determine intermediate format:
+    // If the image or target format uses alpha, retain PNG/WebP so transparency is not lost
+    const metadata = await sharp(buffer).metadata();
+    const hasAlpha = Boolean(metadata.hasAlpha);
+
+    let intermediateBuffer: Buffer;
+    if (hasAlpha && normalizedFormat !== "jpeg") {
+      intermediateBuffer = await pipeline.webp({ quality: 95, effort: 1 }).toBuffer();
+    } else {
+      intermediateBuffer = await pipeline.jpeg({ quality: 95 }).toBuffer();
+    }
 
     let processedBuffer: Buffer;
+    let outputWidth: number | undefined;
+    let outputHeight: number | undefined;
 
-    // 2. Binary search quality parameter if target file size is set
-    if (targetSizeKb && targetSizeKb > 0) {
+    // Helper encoder function based on format and quality
+    const encodeBuffer = async (input: Buffer, q: number, fast: boolean = false) => {
+      let inst = sharp(input);
+      if (normalizedFormat === "avif") {
+        inst = inst.avif({
+          quality: q,
+          effort: fast ? 2 : 4,
+          chromaSubsampling: targetSizeKb ? "4:2:0" : "4:4:4",
+        });
+      } else if (normalizedFormat === "webp") {
+        inst = inst.webp({
+          quality: q,
+          effort: fast ? 2 : 4,
+        });
+      } else if (normalizedFormat === "jpeg") {
+        inst = inst.jpeg({
+          quality: q,
+          mozjpeg: true,
+        });
+      } else {
+        // PNG
+        inst = inst.png({
+          compressionLevel: 8,
+          palette: q < 80,
+        });
+      }
+      return await inst.toBuffer({ resolveWithObject: true });
+    };
+
+    // 2. Binary search quality parameter if target file size is set (for lossy formats)
+    if (targetSizeKb && targetSizeKb > 0 && normalizedFormat !== "png") {
       const targetSizeBytes = targetSizeKb * 1024;
-      
-      // The user-provided quality acts as the maximum quality ceiling.
-      // We search from a visual floor of 20 up to the quality cap.
       const maxQ = Math.max(5, Math.min(100, parsedQuality));
       const minQ = Math.min(20, maxQ);
       let bestQ = minQ;
 
-      // Run 5 search iterations using effort: 2 (very fast search)
       let low = minQ;
       let high = maxQ;
       for (let i = 0; i < 5; i++) {
         const midQ = Math.round((low + high) / 2);
-        const testBuffer = await sharp(intermediateBuffer)
-          .avif({
-            quality: midQ,
-            effort: 2, // Fast effort inside loop to speed up search
-            chromaSubsampling: "4:2:0",
-          })
-          .toBuffer();
+        const { data: testBuffer } = await encodeBuffer(intermediateBuffer, midQ, true);
 
         if (testBuffer.length <= targetSizeBytes) {
-          bestQ = midQ; // Found a valid candidate under target bounds!
-          low = midQ + 1; // Try to maximize quality further towards the cap
+          bestQ = midQ;
+          low = midQ + 1;
         } else {
-          high = midQ - 1; // Exceeded target size -> search lower quality bounds
+          high = midQ - 1;
         }
 
         if (low > high) break;
       }
 
-      // Encode the final AVIF buffer using our best quality index at high quality (effort: 4)
-      processedBuffer = await sharp(intermediateBuffer)
-        .avif({
-          quality: bestQ,
-          effort: 4, // Final high-quality compression pass
-          chromaSubsampling: "4:2:0",
-        })
-        .toBuffer();
+      const finalResult = await encodeBuffer(intermediateBuffer, bestQ, false);
+      processedBuffer = finalResult.data;
+      outputWidth = finalResult.info.width;
+      outputHeight = finalResult.info.height;
     } else {
       // Standard single-pass encoding using quality value
-      processedBuffer = await sharp(intermediateBuffer)
-        .avif({
-          quality: parsedQuality,
-          effort: 4,
-          chromaSubsampling: "4:4:4",
-        })
-        .toBuffer();
+      const finalResult = await encodeBuffer(intermediateBuffer, parsedQuality, false);
+      processedBuffer = finalResult.data;
+      outputWidth = finalResult.info.width;
+      outputHeight = finalResult.info.height;
     }
 
-    const dataUrl = `data:image/avif;base64,${processedBuffer.toString("base64")}`;
+    const mimeType = normalizedFormat === "jpeg" ? "image/jpeg" : `image/${normalizedFormat}`;
+    const dataUrl = `data:${mimeType};base64,${processedBuffer.toString("base64")}`;
 
     return NextResponse.json({
       success: true,
       dataUrl,
       size: processedBuffer.length,
+      format: normalizedFormat,
+      width: outputWidth,
+      height: outputHeight,
     });
   } catch (error: unknown) {
     console.error("Conversion API Error:", error);

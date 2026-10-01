@@ -46,7 +46,7 @@ export default function Header() {
             OpticConvert
           </h1>
           <span className="text-[10px] text-zinc-400 dark:text-zinc-500 font-bold uppercase tracking-wider mt-0.5">
-            AVIF Engine
+            Image Engine
           </span>
         </div>
       </div>
